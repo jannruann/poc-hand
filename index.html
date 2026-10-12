@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PoC Hand Landmarker</title>
+<style>
+  body { margin: 0; background: #000; font-family: sans-serif; }
+  video, canvas { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; object-fit: cover; }
+  #info { position: fixed; top: 8px; left: 8px; z-index: 2; background: rgba(0,0,0,.7);
+          color: #0f0; padding: 8px; font-size: 13px; white-space: pre; max-height: 60vh; overflow: auto; }
+</style>
+</head>
+<body>
+<video id="v" autoplay playsinline muted></video>
+<canvas id="c"></canvas>
+<div id="info">Đang tải mô hình...</div>
+
+<script type="module">
+import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+const info = document.getElementById("info");
+const video = document.getElementById("v");
+const canvas = document.getElementById("c");
+const ctx = canvas.getContext("2d");
+
+const vision = await FilesetResolver.forVisionTasks(
+  "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
+);
+const landmarker = await HandLandmarker.createFromOptions(vision, {
+  baseOptions: {
+    modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+    delegate: "GPU"
+  },
+  runningMode: "VIDEO",
+  numHands: 2
+});
+
+const stream = await navigator.mediaDevices.getUserMedia({
+  video: { facingMode: "environment" }, audio: false
+});
+video.srcObject = stream;
+await video.play();
+canvas.width = video.videoWidth;
+canvas.height = video.videoHeight;
+
+// Số liệu
+let frames = 0, lastSec = performance.now(), startTime = performance.now();
+let procSum = 0, procCount = 0;
+let secFps = [], secProc = [], minuteLog = [];
+let handsNow = 0;
+
+function loop() {
+  const t0 = performance.now();
+  const res = landmarker.detectForVideo(video, t0);
+  const t1 = performance.now();
+
+  procSum += (t1 - t0); procCount++; frames++;
+  handsNow = res.landmarks.length;
+
+  // Vẽ điểm tay để kiểm tra nhận diện bằng mắt
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#0f0";
+  for (const hand of res.landmarks) {
+    for (const p of hand) {
+      ctx.fillRect(p.x * canvas.width - 3, p.y * canvas.height - 3, 6, 6);
+    }
+  }
+
+  // Mỗi giây: tính FPS và thời gian xử lý trung bình
+  if (t1 - lastSec >= 1000) {
+    const fps = frames / ((t1 - lastSec) / 1000);
+    const avgProc = procSum / procCount;
+    secFps.push(fps); secProc.push(avgProc);
+
+    const elapsed = (t1 - startTime) / 1000;
+    // Mỗi 60 giây: tóm tắt một dòng
+    if (secFps.length % 60 === 0) {
+      const last60 = secFps.slice(-60), lastP = secProc.slice(-60);
+      minuteLog.push(
+        `Phút ${secFps.length / 60}: FPS TB ${avg(last60).toFixed(1)}, ` +
+        `FPS thấp nhất ${Math.min(...last60).toFixed(1)}, ` +
+        `xử lý TB ${avg(lastP).toFixed(1)} ms`
+      );
+    }
+
+    info.textContent =
+      `Thiết bị: ${navigator.userAgent.slice(0, 60)}...\n` +
+      `Thời gian chạy: ${elapsed.toFixed(0)} s\n` +
+      `FPS hiện tại: ${fps.toFixed(1)}\n` +
+      `Xử lý TB: ${avgProc.toFixed(1)} ms/khung\n` +
+      `Số tay nhận được: ${handsNow}\n\n` +
+      minuteLog.join("\n");
+
+    frames = 0; procSum = 0; procCount = 0; lastSec = t1;
+  }
+  requestAnimationFrame(loop);
+}
+function avg(a) { return a.reduce((x, y) => x + y, 0) / a.length; }
+loop();
+</script>
+</body>
+</html>
