@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="vi">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -18,12 +18,12 @@
 <body>
 <video id="v" autoplay playsinline muted></video>
 <canvas id="c"></canvas>
-<div id="info">Đang khởi tạo...</div>
+<div id="info">Initializing...</div>
 <div id="controls">
-  <label><input type="checkbox" id="useHand" checked> Bàn tay</label>
-  <label><input type="checkbox" id="usePose"> Cơ thể</label>
-  <label><input type="checkbox" id="useFace"> Khuôn mặt</label>
-  <button id="flip">Đổi camera</button>
+  <label><input type="checkbox" id="useHand" checked> Hand</label>
+  <label><input type="checkbox" id="usePose"> Body</label>
+  <label><input type="checkbox" id="useFace"> Face</label>
+  <button id="flip">Switch camera</button>
 </div>
 
 <script type="module">
@@ -53,7 +53,7 @@ const vision = await FilesetResolver.forVisionTasks(
   `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${VER}/wasm`
 );
 
-// Tạo mô hình: thử GPU trước, lỗi thì chuyển sang CPU và ghi lại
+// Create model: try GPU first, fall back to CPU and log it
 const lm = { hand: null, pose: null, face: null };
 const usedDelegate = {};
 async function make(name) {
@@ -71,19 +71,19 @@ async function make(name) {
       usedDelegate[name] = delegate;
       return obj;
     } catch (e) {
-      console.warn(`${name} lỗi với ${delegate}:`, e);
+      console.warn(`${name} failed with ${delegate}:`, e);
     }
   }
-  throw new Error(`Không tạo được mô hình ${name}`);
+  throw new Error(`Could not create ${name} model`);
 }
 async function ensure(name) {
   if (!lm[name]) {
-    info.textContent = `Đang tải mô hình ${name}...`;
+    info.textContent = `Loading ${name} model...`;
     lm[name] = await make(name);
   }
 }
 
-// Camera trước / sau
+// Front / back camera
 let facing = "environment";
 async function startCam() {
   if (video.srcObject) video.srcObject.getTracks().forEach(t => t.stop());
@@ -104,7 +104,7 @@ flipBtn.onclick = async () => {
   resetStats();
 };
 
-// Số liệu
+// Statistics
 let stats = null;
 function resetStats() {
   stats = { start: performance.now(), last: performance.now(), frames: 0,
@@ -112,7 +112,7 @@ function resetStats() {
 }
 const avg = a => a.reduce((x, y) => x + y, 0) / (a.length || 1);
 
-// Vẽ điểm
+// Draw points
 function drawPoints(points, color, size) {
   ctx.fillStyle = color;
   for (const p of points) {
@@ -155,7 +155,7 @@ function loop() {
   const total = performance.now() - t0;
   const active = Object.keys(perModel);
   if (active.length === 0) {
-    info.textContent = "Chưa bật mô hình nào. Tick ít nhất một ô phía dưới.";
+    info.textContent = "No model enabled. Tick at least one box below.";
     stats.last = now;
     return;
   }
@@ -175,8 +175,8 @@ function loop() {
     if (stats.secFps.length % 60 === 0) {
       const f60 = stats.secFps.slice(-60), p60 = stats.secProc.slice(-60);
       stats.minuteLog.push(
-        `Phút ${stats.secFps.length / 60}: FPS TB ${avg(f60).toFixed(1)}, ` +
-        `FPS thấp nhất ${Math.min(...f60).toFixed(1)}, xử lý TB ${avg(p60).toFixed(1)} ms`
+        `Min ${stats.secFps.length / 60}: avg FPS ${avg(f60).toFixed(1)}, ` +
+        `lowest FPS ${Math.min(...f60).toFixed(1)}, avg processing ${avg(p60).toFixed(1)} ms`
       );
     }
 
@@ -186,13 +186,13 @@ function loop() {
     const countLines = Object.entries(counts).map(([k, v]) => `${k}=${v}`).join(", ");
 
     info.textContent =
-      `Camera: ${facing === "user" ? "trước" : "sau"}\n` +
-      `Mô hình đang chạy: ${active.join(", ")}\n` +
-      `Thời gian chạy: ${((now - stats.start) / 1000).toFixed(0)} s\n` +
-      `FPS hiện tại: ${fps.toFixed(1)}\n` +
-      `Xử lý TB tổng: ${avgProc.toFixed(1)} ms/khung\n` +
-      `Thời gian từng mô hình:\n${modelLines}\n` +
-      `Số người/tay/mặt nhận được: ${countLines}\n\n` +
+      `Camera: ${facing === "user" ? "front" : "back"}\n` +
+      `Running models: ${active.join(", ")}\n` +
+      `Run time: ${((now - stats.start) / 1000).toFixed(0)} s\n` +
+      `Current FPS: ${fps.toFixed(1)}\n` +
+      `Total avg processing: ${avgProc.toFixed(1)} ms/frame\n` +
+      `Per-model time:\n${modelLines}\n` +
+      `Detected people/hands/faces: ${countLines}\n\n` +
       stats.minuteLog.join("\n");
 
     stats.frames = 0; stats.procSum = 0; stats.procN = 0;
@@ -200,7 +200,7 @@ function loop() {
   }
 }
 
-// Bật/tắt từng mô hình
+// Turn each model on/off
 for (const k of Object.keys(boxes)) {
   boxes[k].onchange = async () => {
     if (boxes[k].checked) {
@@ -210,8 +210,8 @@ for (const k of Object.keys(boxes)) {
   };
 }
 
-// Khởi động
-info.textContent = "Đang tải mô hình bàn tay...";
+// Start
+info.textContent = "Loading hand model...";
 await ensure("hand");
 await startCam();
 resetStats();
