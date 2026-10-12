@@ -211,11 +211,9 @@ for (const k of Object.keys(boxes)) {
 }
 
 // Start
+info.textContent = "Starting camera...";
+await startCam();
 info.textContent = "Loading hand model...";
 await ensure("hand");
-await startCam();
 resetStats();
 loop();
-</script>
-</body>
-</html>
