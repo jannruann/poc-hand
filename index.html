@@ -3,100 +3,218 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PoC Hand Landmarker</title>
+<title>PoC Hand + Pose + Face</title>
 <style>
   body { margin: 0; background: #000; font-family: sans-serif; }
   video, canvas { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; object-fit: cover; }
+  video.mirror, canvas.mirror { transform: scaleX(-1); }
   #info { position: fixed; top: 8px; left: 8px; z-index: 2; background: rgba(0,0,0,.7);
-          color: #0f0; padding: 8px; font-size: 13px; white-space: pre; max-height: 60vh; overflow: auto; }
+          color: #0f0; padding: 8px; font-size: 12px; white-space: pre; max-height: 55vh; overflow: auto; }
+  #controls { position: fixed; bottom: 8px; left: 8px; right: 8px; z-index: 2; background: rgba(0,0,0,.7);
+              color: #fff; padding: 8px; font-size: 14px; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  #controls button { padding: 8px 12px; font-size: 14px; }
 </style>
 </head>
 <body>
 <video id="v" autoplay playsinline muted></video>
 <canvas id="c"></canvas>
-<div id="info">Đang tải mô hình...</div>
+<div id="info">Đang khởi tạo...</div>
+<div id="controls">
+  <label><input type="checkbox" id="useHand" checked> Bàn tay</label>
+  <label><input type="checkbox" id="usePose"> Cơ thể</label>
+  <label><input type="checkbox" id="useFace"> Khuôn mặt</label>
+  <button id="flip">Đổi camera</button>
+</div>
 
 <script type="module">
-import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+import { HandLandmarker, PoseLandmarker, FaceLandmarker, FilesetResolver }
+  from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+const VER = "0.10.14";
+const MODELS = {
+  hand: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+  pose: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
+  face: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
+};
+const COLORS = { hand: "#0f0", pose: "#ff0", face: "#0ff" };
 
 const info = document.getElementById("info");
 const video = document.getElementById("v");
 const canvas = document.getElementById("c");
 const ctx = canvas.getContext("2d");
+const flipBtn = document.getElementById("flip");
+const boxes = {
+  hand: document.getElementById("useHand"),
+  pose: document.getElementById("usePose"),
+  face: document.getElementById("useFace")
+};
 
 const vision = await FilesetResolver.forVisionTasks(
-  "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
+  `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${VER}/wasm`
 );
-const landmarker = await HandLandmarker.createFromOptions(vision, {
-  baseOptions: {
-    modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
-    delegate: "GPU"
-  },
-  runningMode: "VIDEO",
-  numHands: 2
-});
 
-const stream = await navigator.mediaDevices.getUserMedia({
-  video: { facingMode: "environment" }, audio: false
-});
-video.srcObject = stream;
-await video.play();
-canvas.width = video.videoWidth;
-canvas.height = video.videoHeight;
-
-// Số liệu
-let frames = 0, lastSec = performance.now(), startTime = performance.now();
-let procSum = 0, procCount = 0;
-let secFps = [], secProc = [], minuteLog = [];
-let handsNow = 0;
-
-function loop() {
-  const t0 = performance.now();
-  const res = landmarker.detectForVideo(video, t0);
-  const t1 = performance.now();
-
-  procSum += (t1 - t0); procCount++; frames++;
-  handsNow = res.landmarks.length;
-
-  // Vẽ điểm tay để kiểm tra nhận diện bằng mắt
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = "#0f0";
-  for (const hand of res.landmarks) {
-    for (const p of hand) {
-      ctx.fillRect(p.x * canvas.width - 3, p.y * canvas.height - 3, 6, 6);
+// Tạo mô hình: thử GPU trước, lỗi thì chuyển sang CPU và ghi lại
+const lm = { hand: null, pose: null, face: null };
+const usedDelegate = {};
+async function make(name) {
+  const factories = {
+    hand: (opt) => HandLandmarker.createFromOptions(vision, { ...opt, numHands: 2 }),
+    pose: (opt) => PoseLandmarker.createFromOptions(vision, { ...opt, numPoses: 1 }),
+    face: (opt) => FaceLandmarker.createFromOptions(vision, { ...opt, numFaces: 1 })
+  };
+  for (const delegate of ["GPU", "CPU"]) {
+    try {
+      const obj = await factories[name]({
+        baseOptions: { modelAssetPath: MODELS[name], delegate },
+        runningMode: "VIDEO"
+      });
+      usedDelegate[name] = delegate;
+      return obj;
+    } catch (e) {
+      console.warn(`${name} lỗi với ${delegate}:`, e);
     }
   }
+  throw new Error(`Không tạo được mô hình ${name}`);
+}
+async function ensure(name) {
+  if (!lm[name]) {
+    info.textContent = `Đang tải mô hình ${name}...`;
+    lm[name] = await make(name);
+  }
+}
 
-  // Mỗi giây: tính FPS và thời gian xử lý trung bình
-  if (t1 - lastSec >= 1000) {
-    const fps = frames / ((t1 - lastSec) / 1000);
-    const avgProc = procSum / procCount;
-    secFps.push(fps); secProc.push(avgProc);
+// Camera trước / sau
+let facing = "environment";
+async function startCam() {
+  if (video.srcObject) video.srcObject.getTracks().forEach(t => t.stop());
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode: { ideal: facing } }, audio: false
+  });
+  video.srcObject = stream;
+  await video.play();
+  const mirror = facing === "user";
+  video.classList.toggle("mirror", mirror);
+  canvas.classList.toggle("mirror", mirror);
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+}
+flipBtn.onclick = async () => {
+  facing = facing === "user" ? "environment" : "user";
+  await startCam();
+  resetStats();
+};
 
-    const elapsed = (t1 - startTime) / 1000;
-    // Mỗi 60 giây: tóm tắt một dòng
-    if (secFps.length % 60 === 0) {
-      const last60 = secFps.slice(-60), lastP = secProc.slice(-60);
-      minuteLog.push(
-        `Phút ${secFps.length / 60}: FPS TB ${avg(last60).toFixed(1)}, ` +
-        `FPS thấp nhất ${Math.min(...last60).toFixed(1)}, ` +
-        `xử lý TB ${avg(lastP).toFixed(1)} ms`
+// Số liệu
+let stats = null;
+function resetStats() {
+  stats = { start: performance.now(), last: performance.now(), frames: 0,
+            procSum: 0, procN: 0, modelSum: {}, secFps: [], secProc: [], minuteLog: [] };
+}
+const avg = a => a.reduce((x, y) => x + y, 0) / (a.length || 1);
+
+// Vẽ điểm
+function drawPoints(points, color, size) {
+  ctx.fillStyle = color;
+  for (const p of points) {
+    ctx.fillRect(p.x * canvas.width - size / 2, p.y * canvas.height - size / 2, size, size);
+  }
+}
+
+function loop() {
+  requestAnimationFrame(loop);
+  if (video.readyState < 2 || !stats) return;
+
+  const now = performance.now();
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const counts = {};
+  const perModel = {};
+  const t0 = performance.now();
+
+  if (boxes.hand.checked && lm.hand) {
+    const a = performance.now();
+    const r = lm.hand.detectForVideo(video, now);
+    perModel.hand = performance.now() - a;
+    counts.hand = r.landmarks.length;
+    for (const h of r.landmarks) drawPoints(h, COLORS.hand, 6);
+  }
+  if (boxes.pose.checked && lm.pose) {
+    const a = performance.now();
+    const r = lm.pose.detectForVideo(video, now);
+    perModel.pose = performance.now() - a;
+    counts.pose = r.landmarks.length;
+    for (const p of r.landmarks) drawPoints(p, COLORS.pose, 8);
+  }
+  if (boxes.face.checked && lm.face) {
+    const a = performance.now();
+    const r = lm.face.detectForVideo(video, now);
+    perModel.face = performance.now() - a;
+    counts.face = r.faceLandmarks.length;
+    for (const f of r.faceLandmarks) drawPoints(f, COLORS.face, 2);
+  }
+
+  const total = performance.now() - t0;
+  const active = Object.keys(perModel);
+  if (active.length === 0) {
+    info.textContent = "Chưa bật mô hình nào. Tick ít nhất một ô phía dưới.";
+    stats.last = now;
+    return;
+  }
+
+  stats.frames++;
+  stats.procSum += total;
+  stats.procN++;
+  for (const k of active) stats.modelSum[k] = (stats.modelSum[k] || 0) + perModel[k];
+
+  if (now - stats.last >= 1000) {
+    const sec = (now - stats.last) / 1000;
+    const fps = stats.frames / sec;
+    const avgProc = stats.procSum / stats.procN;
+    stats.secFps.push(fps);
+    stats.secProc.push(avgProc);
+
+    if (stats.secFps.length % 60 === 0) {
+      const f60 = stats.secFps.slice(-60), p60 = stats.secProc.slice(-60);
+      stats.minuteLog.push(
+        `Phút ${stats.secFps.length / 60}: FPS TB ${avg(f60).toFixed(1)}, ` +
+        `FPS thấp nhất ${Math.min(...f60).toFixed(1)}, xử lý TB ${avg(p60).toFixed(1)} ms`
       );
     }
 
-    info.textContent =
-      `Thiết bị: ${navigator.userAgent.slice(0, 60)}...\n` +
-      `Thời gian chạy: ${elapsed.toFixed(0)} s\n` +
-      `FPS hiện tại: ${fps.toFixed(1)}\n` +
-      `Xử lý TB: ${avgProc.toFixed(1)} ms/khung\n` +
-      `Số tay nhận được: ${handsNow}\n\n` +
-      minuteLog.join("\n");
+    const modelLines = active.map(k =>
+      `  ${k} (${usedDelegate[k] || "?"}): ${(stats.modelSum[k] / stats.procN).toFixed(1)} ms`
+    ).join("\n");
+    const countLines = Object.entries(counts).map(([k, v]) => `${k}=${v}`).join(", ");
 
-    frames = 0; procSum = 0; procCount = 0; lastSec = t1;
+    info.textContent =
+      `Camera: ${facing === "user" ? "trước" : "sau"}\n` +
+      `Mô hình đang chạy: ${active.join(", ")}\n` +
+      `Thời gian chạy: ${((now - stats.start) / 1000).toFixed(0)} s\n` +
+      `FPS hiện tại: ${fps.toFixed(1)}\n` +
+      `Xử lý TB tổng: ${avgProc.toFixed(1)} ms/khung\n` +
+      `Thời gian từng mô hình:\n${modelLines}\n` +
+      `Số người/tay/mặt nhận được: ${countLines}\n\n` +
+      stats.minuteLog.join("\n");
+
+    stats.frames = 0; stats.procSum = 0; stats.procN = 0;
+    stats.modelSum = {}; stats.last = now;
   }
-  requestAnimationFrame(loop);
 }
-function avg(a) { return a.reduce((x, y) => x + y, 0) / a.length; }
+
+// Bật/tắt từng mô hình
+for (const k of Object.keys(boxes)) {
+  boxes[k].onchange = async () => {
+    if (boxes[k].checked) {
+      try { await ensure(k); } catch (e) { info.textContent = e.message; boxes[k].checked = false; return; }
+    }
+    resetStats();
+  };
+}
+
+// Khởi động
+info.textContent = "Đang tải mô hình bàn tay...";
+await ensure("hand");
+await startCam();
+resetStats();
 loop();
 </script>
 </body>
